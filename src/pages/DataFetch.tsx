@@ -21,6 +21,7 @@ export default function DataFetch() {
     confirmUpload,
     cancelUpload,
     uploadPreview,
+    downloadErrorReport,
   } = useReconciliationStore();
   const [activeTab, setActiveTab] = useState<'calls' | 'refunds' | 'adjustments'>('calls');
   const [expandedCustomer, setExpandedCustomer] = useState<string | null>(null);
@@ -207,20 +208,32 @@ export default function DataFetch() {
             </>
           )}
 
-          <div className="flex justify-end gap-3 pt-4 border-t border-navy-100">
-            <button
-              className="btn btn-secondary"
-              onClick={() => { setUploadModalType(null); cancelUpload(); }}
-            >
-              取消
-            </button>
-            <button
-              className="btn btn-primary"
-              disabled={!uploadPreview || !uploadPreview.validation.isValid}
-              onClick={handleConfirmUpload}
-            >
-              确认导入
-            </button>
+          <div className="flex items-center justify-between pt-4 border-t border-navy-100">
+            {uploadPreview && uploadPreview.validation.errorRows.length > 0 && (
+              <button
+                className="btn btn-secondary text-sm"
+                onClick={downloadErrorReport}
+              >
+                <FileSpreadsheet size={14} className="mr-1" />
+                下载错误明细
+              </button>
+            )}
+            {!uploadPreview?.validation.errorRows.length && <div />}
+            <div className="flex gap-3">
+              <button
+                className="btn btn-secondary"
+                onClick={() => { setUploadModalType(null); cancelUpload(); }}
+              >
+                取消
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={!uploadPreview || uploadPreview.validation.validRows === 0}
+                onClick={handleConfirmUpload}
+              >
+                确认导入 ({uploadPreview?.validation.validRows || 0}条有效)
+              </button>
+            </div>
           </div>
         </div>
       </Modal>

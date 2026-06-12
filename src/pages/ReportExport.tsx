@@ -1,18 +1,35 @@
 import { useState, ReactNode } from 'react';
-import { FileSpreadsheet, Download, Users, FileText, AlertTriangle, CheckCircle, Clock, Calendar, ChevronDown, Search } from 'lucide-react';
+import { FileSpreadsheet, Download, Users, FileText, AlertTriangle, CheckCircle, Clock, Calendar, ChevronDown, Search, GitBranch, ShieldCheck, Send, BarChart3, ArrowUpDown, TrendingUp, TrendingDown } from 'lucide-react';
 import { useReconciliationStore } from '@/store/useReconciliationStore';
-import { ExportType } from '@/../shared/types';
+import { ExportType, VersionComparison } from '@/../shared/types';
 
 export default function ReportExport() {
-  const { exportReport, reconciliationResults, currentPeriod, customers, products } =
+  const { exportReport, reconciliationResults, currentPeriod, customers, products, batches, currentBatchId, compareVersions, getBatchVersions } =
     useReconciliationStore();
   const [selectedPeriod, setSelectedPeriod] = useState(currentPeriod);
   const [searchTerm, setSearchTerm] = useState('');
   const [exportingType, setExportingType] = useState<ExportType | null>(null);
+  const [showCompare, setShowCompare] = useState(false);
+  const [compareOldBatchId, setCompareOldBatchId] = useState('');
+  const [compareNewBatchId, setCompareNewBatchId] = useState('');
+  const [comparisonResults, setComparisonResults] = useState<VersionComparison[]>([]);
 
   const completedResults = reconciliationResults.filter((r) => r.status === 'completed');
   const pendingResults = reconciliationResults.filter((r) => r.status === 'pending');
   const partialResults = reconciliationResults.filter((r) => r.status === 'partial');
+
+  const currentBatch = batches.find(b => b.id === currentBatchId);
+  const batchVersions = currentBatchId ? getBatchVersions(currentBatchId) : [];
+
+  const handleCompare = () => {
+    if (!compareOldBatchId || !compareNewBatchId) return;
+    const results = compareVersions(compareOldBatchId, compareNewBatchId);
+    setComparisonResults(results);
+  };
+
+  const filteredComparisons = comparisonResults.filter(
+    (c) => c.customerName.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   const totalConfirmedAmount = reconciliationResults.reduce(
     (sum, r) => sum + r.confirmedAmount, 0);
@@ -80,6 +97,32 @@ export default function ReportExport() {
         <div>
           <h1 className="text-2xl font-bold text-navy-900">报表导出</h1>
           <p className="text-navy-500 mt-1">导出客户对账单、内部汇总表和待跟进清单</p>
+          {currentBatch && (
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-navy-500">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                <GitBranch size={12} /> 版本 V{currentBatch.version}
+              </span>
+              {currentBatch.submittedAt && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded">
+                  <Send size={12} /> 提交人: {currentBatch.submittedBy}
+                </span>
+              )}
+              {currentBatch.confirmedAt && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">
+                  <ShieldCheck size={12} /> 财务确认: {currentBatch.confirmedBy} · {new Date(currentBatch.confirmedAt).toLocaleDateString('zh-CN')}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex gap-3">
+          <button
+            className={`btn ${showCompare ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setShowCompare(!showCompare)}
+          >
+            <BarChart3 size={16} className="mr-2" />
+            版本对比
+          </button>
         </div>
       </div>
 
@@ -316,6 +359,127 @@ export default function ReportExport() {
               </tfoot>
             </table>
           </div>
+        </div>
+      )}
+
+      {showCompare && (
+        <div className="card overflow-hidden">
+          <div className="flex items-center justify-between p-4 border-b border-navy-100">
+            <h3 className="text-lg font-semibold text-navy-800 flex items-center gap-2">
+              <ArrowUpDown size={20} className="text-navy-600" />
+              历史版本对比
+            </h3>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-navy-500">旧版本</span>
+                <select
+                  className="input text-sm py-1.5"
+                  value={compareOldBatchId}
+                  onChange={(e) => setCompareOldBatchId(e.target.value)}
+                >
+                  <option value="">请选择</option>
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} (V{b.version})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <span className="text-navy-400">→</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-navy-500">新版本</span>
+                <select
+                  className="input text-sm py-1.5"
+                  value={compareNewBatchId}
+                  onChange={(e) => setCompareNewBatchId(e.target.value)}
+                >
+                  <option value="">请选择</option>
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} (V{b.version})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleCompare}
+                disabled={!compareOldBatchId || !compareNewBatchId}
+              >
+                开始对比
+              </button>
+            </div>
+          </div>
+
+          {comparisonResults.length > 0 && (
+            <div className="table-container max-h-[400px] overflow-y-auto scrollbar-thin">
+              <table className="table">
+                <thead className="sticky top-0">
+                  <tr>
+                    <th>客户名称</th>
+                    <th className="text-right">调用量变化</th>
+                    <th className="text-right">应收金额变化</th>
+                    <th className="text-right">确认金额变化</th>
+                    <th className="text-right">差异金额变化</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-navy-100">
+                  {filteredComparisons.map((comp) => (
+                    <tr key={comp.customerId}>
+                      <td className="font-medium">{comp.customerName}</td>
+                      <td className="text-right font-mono">
+                        <span className={`inline-flex items-center gap-1 ${comp.callDiff > 0 ? 'text-rose-600' : comp.callDiff < 0 ? 'text-emerald-600' : 'text-navy-600'}`}>
+                          {comp.callDiff > 0 ? <TrendingUp size={14} /> : comp.callDiff < 0 ? <TrendingDown size={14} /> : null}
+                          {comp.callDiff > 0 ? '+' : ''}{comp.callDiff.toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="text-right font-mono">
+                        <span className={`inline-flex items-center gap-1 ${comp.receivableDiff > 0 ? 'text-rose-600' : comp.receivableDiff < 0 ? 'text-emerald-600' : 'text-navy-600'}`}>
+                          {comp.receivableDiff > 0 ? <TrendingUp size={14} /> : comp.receivableDiff < 0 ? <TrendingDown size={14} /> : null}
+                          {comp.receivableDiff > 0 ? '+' : ''}¥{comp.receivableDiff.toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="text-right font-mono font-semibold">
+                        <span className={`inline-flex items-center gap-1 ${comp.confirmedDiff > 0 ? 'text-rose-600' : comp.confirmedDiff < 0 ? 'text-emerald-600' : 'text-navy-600'}`}>
+                          {comp.confirmedDiff > 0 ? <TrendingUp size={14} /> : comp.confirmedDiff < 0 ? <TrendingDown size={14} /> : null}
+                          {comp.confirmedDiff > 0 ? '+' : ''}¥{comp.confirmedDiff.toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="text-right font-mono">
+                        <span className={`inline-flex items-center gap-1 ${comp.differenceDiff > 0 ? 'text-rose-600' : comp.differenceDiff < 0 ? 'text-emerald-600' : 'text-navy-600'}`}>
+                          {comp.differenceDiff > 0 ? <TrendingUp size={14} /> : comp.differenceDiff < 0 ? <TrendingDown size={14} /> : null}
+                          {comp.differenceDiff > 0 ? '+' : ''}¥{comp.differenceDiff.toLocaleString()}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="sticky bottom-0 bg-navy-50">
+                  <tr>
+                    <td className="font-semibold text-navy-700">合计变化</td>
+                    <td className="text-right font-mono font-bold text-navy-800">
+                      {comparisonResults.reduce((sum, c) => sum + c.callDiff, 0).toLocaleString()}
+                    </td>
+                    <td className="text-right font-mono font-bold text-navy-800">
+                      ¥{comparisonResults.reduce((sum, c) => sum + c.receivableDiff, 0).toLocaleString()}
+                    </td>
+                    <td className="text-right font-mono font-bold text-emerald-600">
+                      ¥{comparisonResults.reduce((sum, c) => sum + c.confirmedDiff, 0).toLocaleString()}
+                    </td>
+                    <td className="text-right font-mono font-bold text-rose-600">
+                      ¥{comparisonResults.reduce((sum, c) => sum + c.differenceDiff, 0).toLocaleString()}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+
+          {comparisonResults.length === 0 && compareOldBatchId && compareNewBatchId && (
+            <div className="p-8 text-center text-navy-500">
+              点击"开始对比"查看两版本的差异
+            </div>
+          )}
         </div>
       )}
 

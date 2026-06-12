@@ -19,6 +19,8 @@ import {
   CustomerProgressStatus,
   UploadPreviewData,
   UploadValidationResult,
+  VersionComparison,
+  BatchStatus,
 } from '@/../shared/types';
 import {
   mockProducts,
@@ -41,6 +43,7 @@ interface ReconciliationStore {
   billingConfigs: BillingConfig[];
   results: ReconciliationResult[];
   reconciliationResults: ReconciliationResult[];
+  resultVersions: Array<{ batchId: string; version: number; results: ReconciliationResult[]; snapshotAt: string }>;
   batches: ReconciliationBatch[];
   currentBatchId: string | null;
   customerProgress: CustomerProgress[];
@@ -68,17 +71,26 @@ interface ReconciliationStore {
   setReconciliationCycle: (cycle: ReconciliationCycle) => void;
 
   fetchAllData: () => Promise<void>;
+  getRefetchImpact: () => { affectedCustomers: string[]; exportedCustomers: string[]; confirmedCustomers: string[]; isBatchConfirmed: boolean };
 
   parseUploadFile: (file: File, type: 'calls' | 'refunds' | 'adjustments') => Promise<UploadPreviewData>;
   confirmUpload: () => void;
   cancelUpload: () => void;
+  downloadErrorReport: () => void;
 
   createBatch: (period: string, name: string, remark?: string) => ReconciliationBatch;
   setCurrentBatch: (batchId: string | null) => void;
   updateBatchStatus: (batchId: string, status: ReconciliationBatch['status']) => void;
   updateCustomerProgress: (batchId: string, customerId: string, updates: Partial<CustomerProgress>) => void;
+  submitBatchForReview: (batchId: string) => void;
+  confirmBatch: (batchId: string) => void;
+  withdrawBatch: (batchId: string) => void;
+  createNewVersion: (batchId: string) => ReconciliationBatch;
+  getBatchVersions: (batchId: string) => ReconciliationBatch[];
+  compareVersions: (oldBatchId: string, newBatchId: string) => VersionComparison[];
 
   runReconciliation: () => ReconciliationResult[];
+  getRecalculateImpact: () => { affectedCustomers: string[]; exportedCustomers: string[]; confirmedCustomers: string[]; isBatchConfirmed: boolean };
   recalculateResultAmount: (resultId: string) => void;
 
   markAsDuplicate: (callRecordId: string) => void;
@@ -114,25 +126,16 @@ const calculateUnitPrice = (product: DataProduct, totalCalls: number): number =>
 
 const calculateProductAmount = (
   product: DataProduct,
-  totalCalls: number,
-  authorized: { pricingType: string; discountRate?: number }
+  totalCalls: number
 ): { billableCalls: number; unitPrice: number; subtotal: number } => {
   let unitPrice = calculateUnitPrice(product, totalCalls);
   let billableCalls = totalCalls;
   let subtotal = 0;
 
-  if (authorized.pricingType === 'free_trial') {
-    return { billableCalls: 0, unitPrice, subtotal: 0 };
-  }
-
   if (product.billingType === 'monthly' && product.monthlyFee) {
     subtotal = product.monthlyFee;
   } else {
     subtotal = billableCalls * unitPrice;
-  }
-
-  if (authorized.pricingType === 'discount' && authorized.discountRate) {
-    subtotal = subtotal * authorized.discountRate;
   }
 
   return { billableCalls, unitPrice, subtotal };
@@ -154,6 +157,7 @@ const isAuthorizedForPeriod = (authorized: { startDate: string; endDate: string 
 const validateUploadedCalls = (rows: any[], customers: Customer[], products: DataProduct[]): UploadValidationResult => {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const errorRows: UploadValidationResult['errorRows'] = [];
   let validRows = 0;
 
   const customerMap = new Map(customers.map(c => [c.name, c.id]));
@@ -161,23 +165,28 @@ const validateUploadedCalls = (rows: any[], customers: Customer[], products: Dat
 
   rows.forEach((row, idx) => {
     const lineNum = idx + 2;
+    const rowErrors: string[] = [];
+    const rowWarnings: string[] = [];
+
     if (!row.customerName || !row.productName || !row.callCount) {
-      errors.push(`第${lineNum}行: 缺少必填字段(客户名称/产品名称/调用次数)`);
-      return;
+      rowErrors.push('缺少必填字段(客户名称/产品名称/调用次数)');
     }
-    if (!customerMap.has(row.customerName)) {
-      warnings.push(`第${lineNum}行: 客户"${row.customerName}"不存在系统中，将跳过`);
-      return;
+    if (row.customerName && !customerMap.has(row.customerName)) {
+      rowErrors.push(`客户"${row.customerName}"不存在系统中`);
     }
-    if (!productMap.has(row.productName)) {
-      warnings.push(`第${lineNum}行: 产品"${row.productName}"不存在系统中，将跳过`);
-      return;
+    if (row.productName && !productMap.has(row.productName)) {
+      rowErrors.push(`产品"${row.productName}"不存在`);
     }
-    if (isNaN(Number(row.callCount)) || Number(row.callCount) < 0) {
-      errors.push(`第${lineNum}行: 调用次数必须是非负数字`);
-      return;
+    if (row.callCount !== undefined && (isNaN(Number(row.callCount)) || Number(row.callCount) < 0)) {
+      rowErrors.push('调用次数必须是非负数字');
     }
-    validRows++;
+
+    if (rowErrors.length > 0) {
+      errors.push(`第${lineNum}行: ${rowErrors.join('; ')}`);
+      errorRows.push({ rowIndex: lineNum, errors: [...rowErrors, ...rowWarnings], rowData: row });
+    } else {
+      validRows++;
+    }
   });
 
   return {
@@ -186,12 +195,14 @@ const validateUploadedCalls = (rows: any[], customers: Customer[], products: Dat
     warnings,
     totalRows: rows.length,
     validRows,
+    errorRows,
   };
 };
 
 const validateUploadedRefunds = (rows: any[], customers: Customer[], products: DataProduct[]): UploadValidationResult => {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const errorRows: UploadValidationResult['errorRows'] = [];
   let validRows = 0;
 
   const customerMap = new Map(customers.map(c => [c.name, c.id]));
@@ -199,23 +210,27 @@ const validateUploadedRefunds = (rows: any[], customers: Customer[], products: D
 
   rows.forEach((row, idx) => {
     const lineNum = idx + 2;
+    const rowErrors: string[] = [];
+
     if (!row.customerName || !row.productName || !row.amount || !row.reason) {
-      errors.push(`第${lineNum}行: 缺少必填字段(客户名称/产品名称/金额/退款原因)`);
-      return;
+      rowErrors.push('缺少必填字段(客户名称/产品名称/金额/退款原因)');
     }
-    if (!customerMap.has(row.customerName)) {
-      warnings.push(`第${lineNum}行: 客户"${row.customerName}"不存在`);
-      return;
+    if (row.customerName && !customerMap.has(row.customerName)) {
+      rowErrors.push(`客户"${row.customerName}"不存在`);
     }
-    if (!productMap.has(row.productName)) {
-      warnings.push(`第${lineNum}行: 产品"${row.productName}"不存在`);
-      return;
+    if (row.productName && !productMap.has(row.productName)) {
+      rowErrors.push(`产品"${row.productName}"不存在`);
     }
-    if (isNaN(Number(row.amount)) || Number(row.amount) <= 0) {
-      errors.push(`第${lineNum}行: 退款金额必须是正数`);
-      return;
+    if (row.amount !== undefined && (isNaN(Number(row.amount)) || Number(row.amount) <= 0)) {
+      rowErrors.push('退款金额必须是正数');
     }
-    validRows++;
+
+    if (rowErrors.length > 0) {
+      errors.push(`第${lineNum}行: ${rowErrors.join('; ')}`);
+      errorRows.push({ rowIndex: lineNum, errors: rowErrors, rowData: row });
+    } else {
+      validRows++;
+    }
   });
 
   return {
@@ -224,35 +239,41 @@ const validateUploadedRefunds = (rows: any[], customers: Customer[], products: D
     warnings,
     totalRows: rows.length,
     validRows,
+    errorRows,
   };
 };
 
 const validateUploadedAdjustments = (rows: any[], customers: Customer[]): UploadValidationResult => {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const errorRows: UploadValidationResult['errorRows'] = [];
   let validRows = 0;
 
   const customerMap = new Map(customers.map(c => [c.name, c.id]));
 
   rows.forEach((row, idx) => {
     const lineNum = idx + 2;
+    const rowErrors: string[] = [];
+
     if (!row.customerName || !row.amount || !row.type || !row.reason || !row.operator) {
-      errors.push(`第${lineNum}行: 缺少必填字段(客户名称/金额/类型/原因/操作人)`);
-      return;
+      rowErrors.push('缺少必填字段(客户名称/金额/类型/原因/操作人)');
     }
-    if (!customerMap.has(row.customerName)) {
-      warnings.push(`第${lineNum}行: 客户"${row.customerName}"不存在`);
-      return;
+    if (row.customerName && !customerMap.has(row.customerName)) {
+      rowErrors.push(`客户"${row.customerName}"不存在`);
     }
-    if (!['addition', 'deduction'].includes(row.type)) {
-      errors.push(`第${lineNum}行: 类型必须是 addition(加款) 或 deduction(减款)`);
-      return;
+    if (row.type && !['addition', 'deduction'].includes(row.type)) {
+      rowErrors.push(`类型必须是 addition(加款) 或 deduction(减款)`);
     }
-    if (isNaN(Number(row.amount)) || Number(row.amount) <= 0) {
-      errors.push(`第${lineNum}行: 金额必须是正数`);
-      return;
+    if (row.amount !== undefined && (isNaN(Number(row.amount)) || Number(row.amount) <= 0)) {
+      rowErrors.push('金额必须是正数');
     }
-    validRows++;
+
+    if (rowErrors.length > 0) {
+      errors.push(`第${lineNum}行: ${rowErrors.join('; ')}`);
+      errorRows.push({ rowIndex: lineNum, errors: rowErrors, rowData: row });
+    } else {
+      validRows++;
+    }
   });
 
   return {
@@ -261,6 +282,7 @@ const validateUploadedAdjustments = (rows: any[], customers: Customer[]): Upload
     warnings,
     totalRows: rows.length,
     validRows,
+    errorRows,
   };
 };
 
@@ -283,6 +305,10 @@ const recalculateConfirmedAmount = (result: ReconciliationResult): Reconciliatio
     }
   }
 
+  if (confirmedAmount < 0) {
+    confirmedAmount = 0;
+  }
+
   return {
     ...result,
     confirmedAmount: Number(confirmedAmount.toFixed(2)),
@@ -302,6 +328,7 @@ export const useReconciliationStore = create<ReconciliationStore>()(
       billingConfigs: [],
       results: [],
       reconciliationResults: [],
+      resultVersions: [],
       batches: [],
       currentBatchId: null,
       customerProgress: [],
@@ -427,24 +454,25 @@ export const useReconciliationStore = create<ReconciliationStore>()(
         const workbook = XLSX.read(buffer, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
-        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-        const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+        const allRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        const headers = allRows.length > 0 ? Object.keys(allRows[0]) : [];
 
         const { customers, products } = get();
         let validation: UploadValidationResult;
 
         if (type === 'calls') {
-          validation = validateUploadedCalls(rows, customers, products);
+          validation = validateUploadedCalls(allRows, customers, products);
         } else if (type === 'refunds') {
-          validation = validateUploadedRefunds(rows, customers, products);
+          validation = validateUploadedRefunds(allRows, customers, products);
         } else {
-          validation = validateUploadedAdjustments(rows, customers);
+          validation = validateUploadedAdjustments(allRows, customers);
         }
 
         const preview: UploadPreviewData = {
           type,
           headers,
-          rows: rows.slice(0, 10),
+          rows: allRows.slice(0, 10),
+          allRows,
           validation,
           mappedFields: {},
         };
@@ -459,10 +487,11 @@ export const useReconciliationStore = create<ReconciliationStore>()(
 
         const customerMap = new Map(customers.map(c => [c.name, c.id]));
         const productMap = new Map(products.map(p => [p.name, p.id]));
+        const validRows = uploadPreview.allRows;
 
         if (uploadPreview.type === 'calls') {
-          const newRecords: CallRecord[] = uploadPreview.rows
-            .filter(row => customerMap.has(row.customerName) && productMap.has(row.productName))
+          const newRecords: CallRecord[] = validRows
+            .filter(row => customerMap.has(row.customerName) && productMap.has(row.productName) && Number(row.callCount) >= 0)
             .map(row => ({
               id: generateId('call'),
               customerId: customerMap.get(row.customerName)!,
@@ -479,8 +508,8 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             uploadPreview: null,
           });
         } else if (uploadPreview.type === 'refunds') {
-          const newRecords: RefundRecord[] = uploadPreview.rows
-            .filter(row => customerMap.has(row.customerName) && productMap.has(row.productName))
+          const newRecords: RefundRecord[] = validRows
+            .filter(row => customerMap.has(row.customerName) && productMap.has(row.productName) && Number(row.amount) > 0)
             .map(row => ({
               id: generateId('refund'),
               customerId: customerMap.get(row.customerName)!,
@@ -497,8 +526,8 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             uploadPreview: null,
           });
         } else {
-          const newRecords: AdjustmentRecord[] = uploadPreview.rows
-            .filter(row => customerMap.has(row.customerName))
+          const newRecords: AdjustmentRecord[] = validRows
+            .filter(row => customerMap.has(row.customerName) && ['addition', 'deduction'].includes(row.type) && Number(row.amount) > 0)
             .map(row => ({
               id: generateId('adj'),
               customerId: customerMap.get(row.customerName)!,
@@ -518,6 +547,22 @@ export const useReconciliationStore = create<ReconciliationStore>()(
 
       cancelUpload: () => set({ uploadPreview: null }),
 
+      downloadErrorReport: () => {
+        const { uploadPreview } = get();
+        if (!uploadPreview || uploadPreview.validation.errorRows.length === 0) return;
+
+        const errorRows = uploadPreview.validation.errorRows.map(e => ({
+          行号: e.rowIndex,
+          错误说明: e.errors.join('; '),
+          ...e.rowData,
+        }));
+
+        const ws = XLSX.utils.json_to_sheet(errorRows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, '错误明细');
+        XLSX.writeFile(wb, `上传错误明细_${uploadPreview.type}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      },
+
       createBatch: (period, name, remark) => {
         const { customers } = get();
         const batch: ReconciliationBatch = {
@@ -525,6 +570,7 @@ export const useReconciliationStore = create<ReconciliationStore>()(
           period,
           name,
           status: 'draft',
+          version: 1,
           createdAt: new Date().toISOString(),
           createdBy: '系统管理员',
           remark,
@@ -559,10 +605,142 @@ export const useReconciliationStore = create<ReconciliationStore>()(
         set(state => ({
           batches: state.batches.map(b =>
             b.id === batchId
-              ? { ...b, status, completedAt: status === 'completed' || status === 'closed' ? new Date().toISOString() : undefined }
+              ? { ...b, status, completedAt: status === 'confirmed' || status === 'closed' ? new Date().toISOString() : undefined }
               : b
           ),
         })),
+
+      submitBatchForReview: (batchId) =>
+        set(state => ({
+          batches: state.batches.map(b =>
+            b.id === batchId
+              ? { ...b, status: 'submitted', submittedAt: new Date().toISOString(), submittedBy: '运营专员' }
+              : b
+          ),
+        })),
+
+      confirmBatch: (batchId) => {
+        const { reconciliationResults, resultVersions } = get();
+        const batch = get().batches.find(b => b.id === batchId);
+        if (!batch) return;
+
+        const newSnapshot = {
+          batchId,
+          version: batch.version,
+          results: JSON.parse(JSON.stringify(reconciliationResults)),
+          snapshotAt: new Date().toISOString(),
+        };
+
+        set(state => ({
+          batches: state.batches.map(b =>
+            b.id === batchId
+              ? { ...b, status: 'confirmed', confirmedAt: new Date().toISOString(), confirmedBy: '财务主管' }
+              : b
+          ),
+          resultVersions: [...resultVersions, newSnapshot],
+        }));
+      },
+
+      withdrawBatch: (batchId) =>
+        set(state => ({
+          batches: state.batches.map(b =>
+            b.id === batchId
+              ? { ...b, status: 'in_progress', submittedAt: undefined, submittedBy: undefined, confirmedAt: undefined, confirmedBy: undefined }
+              : b
+          ),
+        })),
+
+      createNewVersion: (batchId) => {
+        const { batches, customerProgress, reconciliationResults, resultVersions } = get();
+        const oldBatch = batches.find(b => b.id === batchId);
+        if (!oldBatch) return oldBatch as any;
+
+        const snapshot = {
+          batchId,
+          version: oldBatch.version,
+          results: JSON.parse(JSON.stringify(reconciliationResults)),
+          snapshotAt: new Date().toISOString(),
+        };
+
+        const newBatch: ReconciliationBatch = {
+          ...oldBatch,
+          id: generateId('batch'),
+          status: 'in_progress',
+          version: oldBatch.version + 1,
+          createdAt: new Date().toISOString(),
+          parentBatchId: oldBatch.id,
+          submittedAt: undefined,
+          submittedBy: undefined,
+          confirmedAt: undefined,
+          confirmedBy: undefined,
+          completedAt: undefined,
+        };
+
+        const oldProgress = customerProgress.filter(p => p.batchId === batchId);
+        const newProgress = oldProgress.map(p => ({
+          ...p,
+          batchId: newBatch.id,
+          lastUpdated: new Date().toISOString(),
+        }));
+
+        set(state => ({
+          batches: [...state.batches, newBatch],
+          currentBatchId: newBatch.id,
+          customerProgress: [...state.customerProgress, ...newProgress],
+          resultVersions: [...state.resultVersions, snapshot],
+        }));
+
+        return newBatch;
+      },
+
+      getBatchVersions: (batchId) => {
+        const { batches } = get();
+        const baseBatch = batches.find(b => b.id === batchId);
+        if (!baseBatch) return [];
+
+        const rootId = baseBatch.parentBatchId || baseBatch.id;
+        return batches
+          .filter(b => b.id === rootId || b.parentBatchId === rootId || (baseBatch.parentBatchId && b.parentBatchId === baseBatch.parentBatchId))
+          .sort((a, b) => a.version - b.version);
+      },
+
+      compareVersions: (oldBatchId, newBatchId) => {
+        const { resultVersions, batches, reconciliationResults } = get();
+        const comparisons: VersionComparison[] = [];
+
+        const oldBatch = batches.find(b => b.id === oldBatchId);
+        const newBatch = batches.find(b => b.id === newBatchId);
+        if (!oldBatch || !newBatch) return comparisons;
+
+        const oldSnap = resultVersions.find(s => s.batchId === oldBatchId && s.version === oldBatch.version);
+        const newSnap = resultVersions.find(s => s.batchId === newBatchId && s.version === newBatch.version);
+
+        const oldResults = oldSnap?.results || reconciliationResults;
+        const newResults = newSnap?.results || reconciliationResults;
+
+        const allCustomerIds = new Set([...oldResults.map(r => r.customerId), ...newResults.map(r => r.customerId)]);
+
+        for (const customerId of allCustomerIds) {
+          const oldResult = oldResults.find(r => r.customerId === customerId);
+          const newResult = newResults.find(r => r.customerId === customerId);
+          if (!oldResult || !newResult) continue;
+
+          comparisons.push({
+            customerId,
+            customerName: newResult.customerName,
+            oldVersion: oldBatch.version,
+            newVersion: newBatch.version,
+            callDiff: newResult.totalCalls - oldResult.totalCalls,
+            receivableDiff: Number((newResult.receivableAmount - oldResult.receivableAmount).toFixed(2)),
+            confirmedDiff: Number((newResult.confirmedAmount - oldResult.confirmedAmount).toFixed(2)),
+            differenceDiff: Number((newResult.differenceAmount - oldResult.differenceAmount).toFixed(2)),
+            oldResult,
+            newResult,
+          });
+        }
+
+        return comparisons;
+      },
 
       updateCustomerProgress: (batchId, customerId, updates) =>
         set(state => ({
@@ -572,6 +750,38 @@ export const useReconciliationStore = create<ReconciliationStore>()(
               : p
           ),
         })),
+
+      getRefetchImpact: () => {
+        const { customers, customerProgress, currentBatchId, batches } = get();
+        const batch = batches.find(b => b.id === currentBatchId);
+        const isBatchConfirmed = batch?.status === 'confirmed';
+
+        const affectedCustomers = customers.map(c => c.name);
+
+        const exportedCustomers = customerProgress
+          .filter(p => p.batchId === currentBatchId && p.exported)
+          .map(p => p.customerName);
+
+        const confirmedCustomers = isBatchConfirmed ? customers.map(c => c.name) : [];
+
+        return { affectedCustomers, exportedCustomers, confirmedCustomers, isBatchConfirmed };
+      },
+
+      getRecalculateImpact: () => {
+        const { reconciliationResults, customerProgress, currentBatchId, batches } = get();
+        const batch = batches.find(b => b.id === currentBatchId);
+        const isBatchConfirmed = batch?.status === 'confirmed';
+
+        const affectedCustomers = reconciliationResults.map(r => r.customerName);
+
+        const exportedCustomers = customerProgress
+          .filter(p => p.batchId === currentBatchId && p.exported)
+          .map(p => p.customerName);
+
+        const confirmedCustomers = isBatchConfirmed ? reconciliationResults.map(r => r.customerName) : [];
+
+        return { affectedCustomers, exportedCustomers, confirmedCustomers, isBatchConfirmed };
+      },
 
       runReconciliation: () => {
         set({ isReconciling: true });
@@ -666,7 +876,9 @@ export const useReconciliationStore = create<ReconciliationStore>()(
                   type: 'free_trial',
                   description: `免费试用期间，${totalCalls}次调用免计费(${product.name})`,
                   amount: freeAmount,
-                  status: 'pending',
+                  status: 'resolved',
+                  resolution: '免费试用自动免单',
+                  resolvedAt: new Date().toISOString(),
                 });
               }
             }
@@ -689,7 +901,7 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             }
 
             const billableCount = totalCalls - duplicateCount;
-            const productAmount = calculateProductAmount(product, billableCount, authorized);
+            const productAmount = calculateProductAmount(product, billableCount);
             callSummary.push({
               productId: product.id,
               productName: product.name,
@@ -760,8 +972,8 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             period: currentPeriod,
             totalCalls: callSummary.reduce((sum, s) => sum + s.totalCalls, 0),
             receivableAmount: Number(totalReceivable.toFixed(2)),
-            confirmedAmount: Number((totalReceivable - refundTotal + adjustmentTotal).toFixed(2)),
-            differenceAmount: Number((refundTotal - adjustmentTotal).toFixed(2)),
+            confirmedAmount: Number(totalReceivable.toFixed(2)),
+            differenceAmount: 0,
             refundAdjustment: Number(refundTotal.toFixed(2)),
             manualAdjustment: Number(adjustmentTotal.toFixed(2)),
             status:
@@ -791,6 +1003,10 @@ export const useReconciliationStore = create<ReconciliationStore>()(
               lastUpdated: new Date().toISOString(),
             });
           }
+        }
+
+        if (currentBatchId) {
+          get().updateBatchStatus(currentBatchId, 'in_progress');
         }
 
         set({ results, reconciliationResults: results, isReconciling: false });
@@ -1124,12 +1340,25 @@ export const useReconciliationStore = create<ReconciliationStore>()(
         billingConfigs: state.billingConfigs,
         results: state.results,
         reconciliationResults: state.reconciliationResults,
+        resultVersions: state.resultVersions,
         batches: state.batches,
         currentBatchId: state.currentBatchId,
         customerProgress: state.customerProgress,
         currentPeriod: state.currentPeriod,
         reconciliationCycle: state.reconciliationCycle,
       }),
+      migrate: (persistedState: any, version: number) => {
+        if (persistedState.batches) {
+          persistedState.batches = persistedState.batches.map((batch: any) => ({
+            version: 1,
+            ...batch,
+          }));
+        }
+        if (!persistedState.resultVersions) {
+          persistedState.resultVersions = [];
+        }
+        return persistedState as any;
+      },
     }
   )
 );

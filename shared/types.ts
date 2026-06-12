@@ -165,15 +165,23 @@ export type ExportType = 'customer_statement' | 'internal_summary' | 'follow_up_
 
 export type CustomerProgressStatus = 'not_started' | 'fetched' | 'reconciled' | 'pending_resolution' | 'exported';
 
+export type BatchStatus = 'draft' | 'in_progress' | 'submitted' | 'confirmed' | 'closed';
+
 export interface ReconciliationBatch {
   id: string;
   period: string;
   name: string;
-  status: 'draft' | 'in_progress' | 'completed' | 'closed';
+  status: BatchStatus;
+  version: number;
   createdAt: string;
   createdBy: string;
+  submittedAt?: string;
+  submittedBy?: string;
+  confirmedAt?: string;
+  confirmedBy?: string;
   completedAt?: string;
   remark?: string;
+  parentBatchId?: string;
 }
 
 export interface CustomerProgress {
@@ -196,13 +204,34 @@ export interface UploadValidationResult {
   warnings: string[];
   totalRows: number;
   validRows: number;
+  errorRows: UploadErrorRow[];
+}
+
+export interface UploadErrorRow {
+  rowIndex: number;
+  errors: string[];
+  rowData: any;
 }
 
 export interface UploadPreviewData {
   type: 'calls' | 'refunds' | 'adjustments';
   headers: string[];
   rows: any[];
+  allRows: any[];
   validation: UploadValidationResult;
   mappedFields: Record<string, string>;
+}
+
+export interface VersionComparison {
+  customerId: string;
+  customerName: string;
+  oldVersion: number;
+  newVersion: number;
+  callDiff: number;
+  receivableDiff: number;
+  confirmedDiff: number;
+  differenceDiff: number;
+  oldResult: ReconciliationResult;
+  newResult: ReconciliationResult;
 }
 

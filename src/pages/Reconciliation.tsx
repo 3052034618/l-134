@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Calculator, CheckCircle, AlertTriangle, TrendingUp, TrendingDown, ChevronDown, ChevronRight, RefreshCw, Play, Search, FileText, Plus, Layers, Clock, Users } from 'lucide-react';
+import { Calculator, CheckCircle, AlertTriangle, TrendingUp, TrendingDown, ChevronDown, ChevronRight, RefreshCw, Play, Search, FileText, Plus, Layers, Clock, Users, Send, XCircle, GitBranch, ShieldCheck, History } from 'lucide-react';
 import { useReconciliationStore } from '@/store/useReconciliationStore';
 import StatusBadge from '@/components/StatusBadge';
 import Modal from '@/components/Modal';
@@ -18,6 +18,11 @@ export default function Reconciliation() {
     createBatch,
     setCurrentBatch,
     updateBatchStatus,
+    submitBatchForReview,
+    confirmBatch,
+    withdrawBatch,
+    createNewVersion,
+    getRecalculateImpact,
   } = useReconciliationStore();
   const [expandedResult, setExpandedResult] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -26,6 +31,9 @@ export default function Reconciliation() {
   const [newBatchName, setNewBatchName] = useState('');
   const [newBatchRemark, setNewBatchRemark] = useState('');
   const [viewMode, setViewMode] = useState<'reconciliation' | 'batch'>('reconciliation');
+  const [showImpactModal, setShowImpactModal] = useState(false);
+  const [impactData, setImpactData] = useState<any>(null);
+  const [pendingAction, setPendingAction] = useState<'recalculate' | null>(null);
 
   const totalReceivable = reconciliationResults.reduce((sum, r) => sum + r.receivableAmount, 0);
   const totalConfirmed = reconciliationResults.reduce((sum, r) => sum + r.confirmedAmount, 0);
@@ -91,6 +99,53 @@ export default function Reconciliation() {
     setShowBatchModal(false);
     setNewBatchName('');
     setNewBatchRemark('');
+  };
+
+  const getBatchStatusText = (status: string) => {
+    switch (status) {
+      case 'draft': return '草稿';
+      case 'in_progress': return '进行中';
+      case 'submitted': return '待财务确认';
+      case 'confirmed': return '已确认';
+      case 'closed': return '已关闭';
+      default: return status;
+    }
+  };
+
+  const getBatchStatusColor = (status: string) => {
+    switch (status) {
+      case 'draft': return 'bg-navy-400';
+      case 'in_progress': return 'bg-blue-500';
+      case 'submitted': return 'bg-amber-500';
+      case 'confirmed': return 'bg-emerald-500';
+      case 'closed': return 'bg-navy-600';
+      default: return 'bg-navy-400';
+    }
+  };
+
+  const handleRecalculate = () => {
+    const impact = getRecalculateImpact();
+    if (impact.isBatchConfirmed || impact.exportedCustomers.length > 0) {
+      setImpactData(impact);
+      setPendingAction('recalculate');
+      setShowImpactModal(true);
+    } else {
+      runReconciliation();
+    }
+  };
+
+  const confirmAction = () => {
+    if (pendingAction === 'recalculate') {
+      if (impactData?.isBatchConfirmed) {
+        alert('该批次已财务确认，不能直接修改。请先撤回或新建版本。');
+        setShowImpactModal(false);
+        return;
+      }
+      runReconciliation();
+    }
+    setShowImpactModal(false);
+    setPendingAction(null);
+    setImpactData(null);
   };
 
   const progressStats = {
@@ -571,11 +626,25 @@ export default function Reconciliation() {
           <p className="text-navy-500 mt-1">
             对账周期: <span className="font-semibold text-navy-700">{currentPeriod}</span>
             {currentBatch && (
-              <span className="ml-4">
+              <>
+                <span className="mx-2">|</span>
                 当前批次: <span className="font-semibold text-blue-600">{currentBatch.name}</span>
-              </span>
+                <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium text-white bg-blue-500">
+                  <GitBranch size={12} /> V{currentBatch.version}
+                </span>
+              </>
             )}
           </p>
+          {currentBatch && (currentBatch.confirmedAt || currentBatch.submittedAt) && (
+            <p className="text-xs text-navy-500 mt-1 flex items-center gap-4">
+              {currentBatch.submittedAt && (
+                <span><Send size={12} className="inline mr-1 text-amber-500" /> 提交人: {currentBatch.submittedBy} · {new Date(currentBatch.submittedAt).toLocaleString('zh-CN')}</span>
+              )}
+              {currentBatch.confirmedAt && (
+                <span><ShieldCheck size={12} className="inline mr-1 text-emerald-500" /> 确认人: {currentBatch.confirmedBy} · {new Date(currentBatch.confirmedAt).toLocaleString('zh-CN')}</span>
+              )}
+            </p>
+          )}
         </div>
         <div className="flex gap-3">
           <div className="flex bg-navy-50 rounded-lg p-1">
@@ -600,14 +669,63 @@ export default function Reconciliation() {
             <Plus size={16} className="mr-2" />
             新建批次
           </button>
-          <button className="btn btn-secondary" onClick={() => runReconciliation()}>
+          {currentBatch && currentBatch.status === 'confirmed' && (
+            <button
+              className="btn btn-secondary"
+              onClick={() => createNewVersion(currentBatch.id)}
+            >
+              <GitBranch size={16} className="mr-2" />
+              新建版本
+            </button>
+          )}
+          {currentBatch && currentBatch.status === 'in_progress' && reconciliationResults.length > 0 && (
+            <button
+              className="btn btn-secondary"
+              onClick={() => submitBatchForReview(currentBatch.id)}
+            >
+              <Send size={16} className="mr-2" />
+              提交财务复核
+            </button>
+          )}
+          {currentBatch && currentBatch.status === 'submitted' && (
+            <>
+              <button
+                className="btn btn-secondary"
+                onClick={() => withdrawBatch(currentBatch.id)}
+              >
+                <XCircle size={16} className="mr-2" />
+                撤回
+              </button>
+              <button
+                className="btn btn-emerald"
+                onClick={() => confirmBatch(currentBatch.id)}
+              >
+                <ShieldCheck size={16} className="mr-2" />
+                财务确认
+              </button>
+            </>
+          )}
+          {currentBatch && currentBatch.status === 'confirmed' && (
+            <button
+              className="btn btn-secondary"
+              onClick={() => withdrawBatch(currentBatch.id)}
+            >
+              <History size={16} className="mr-2" />
+              撤回确认
+            </button>
+          )}
+          <button
+            className="btn btn-secondary"
+            onClick={handleRecalculate}
+            disabled={currentBatch?.status === 'confirmed'}
+          >
             <RefreshCw size={16} className="mr-2" />
             重新计算
           </button>
           <button
             className="btn btn-primary"
-            onClick={() => runReconciliation()}
-            disabled={isReconciling}
+            onClick={handleRecalculate}
+            disabled={isReconciling || currentBatch?.status === 'confirmed'}
           >
             {isReconciling ? (
               <>
@@ -628,7 +746,7 @@ export default function Reconciliation() {
         <div className="card p-4">
           <div className="flex items-center gap-4 overflow-x-auto scrollbar-thin">
             <span className="text-sm font-medium text-navy-600 flex-shrink-0">切换批次:</span>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               {batches.map((batch) => (
                 <button
                   key={batch.id}
@@ -641,13 +759,12 @@ export default function Reconciliation() {
                 >
                   {batch.name}
                   <span className="ml-2 text-xs opacity-70">
+                    V{batch.version}
+                  </span>
+                  <span className="ml-2 text-xs opacity-70">
                     ({batch.period})
                   </span>
-                  <span className={`ml-2 inline-block w-2 h-2 rounded-full ${
-                    batch.status === 'completed' ? 'bg-emerald-400' :
-                    batch.status === 'in_progress' ? 'bg-blue-400' :
-                    batch.status === 'closed' ? 'bg-navy-400' : 'bg-amber-400'
-                  }`} />
+                  <span className={`ml-2 inline-block w-2 h-2 rounded-full ${getBatchStatusColor(batch.status)}`} title={getBatchStatusText(batch.status)} />
                 </button>
               ))}
             </div>
@@ -712,6 +829,87 @@ export default function Reconciliation() {
             >
               创建批次
             </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showImpactModal}
+        onClose={() => { setShowImpactModal(false); setPendingAction(null); setImpactData(null); }}
+        title="操作影响范围确认"
+      >
+        <div className="space-y-4">
+          {impactData?.isBatchConfirmed && (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
+              <p className="text-rose-700 font-medium flex items-center gap-2">
+                <AlertTriangle size={18} />
+                本批次已财务确认
+              </p>
+              <p className="text-sm text-rose-600 mt-1">
+                已确认的批次不能直接修改数据，请先撤回确认或新建版本。
+              </p>
+            </div>
+          )}
+
+          {!impactData?.isBatchConfirmed && impactData?.exportedCustomers.length > 0 && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+              <p className="text-amber-700 font-medium flex items-center gap-2">
+                <AlertTriangle size={18} />
+                存在已导出的客户
+              </p>
+              <p className="text-sm text-amber-600 mt-1">
+                以下客户的对账单已经导出，重新计算后数据可能与已导出版本不一致：
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {impactData.exportedCustomers.map((name: string) => (
+                  <span key={name} className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded">
+                    {name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <p className="text-sm font-medium text-navy-700 mb-2">本次操作将影响以下 {impactData?.affectedCustomers.length || 0} 个客户：</p>
+            <div className="max-h-40 overflow-y-auto space-y-1 p-3 bg-navy-50 rounded-lg">
+              {impactData?.affectedCustomers.map((name: string) => (
+                <div key={name} className="text-sm text-navy-600 flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 bg-navy-400 rounded-full" />
+                  {name}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-navy-100">
+            <button
+              className="btn btn-secondary"
+              onClick={() => { setShowImpactModal(false); setPendingAction(null); setImpactData(null); }}
+            >
+              取消
+            </button>
+            {!impactData?.isBatchConfirmed && (
+              <button
+                className="btn btn-primary"
+                onClick={confirmAction}
+              >
+                确认继续
+              </button>
+            )}
+            {impactData?.isBatchConfirmed && currentBatch && (
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  createNewVersion(currentBatch.id);
+                  setShowImpactModal(false);
+                  setPendingAction(null);
+                  setImpactData(null);
+                }}
+              >
+                新建版本
+              </button>
+            )}
           </div>
         </div>
       </Modal>
