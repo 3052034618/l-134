@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import { useState, ReactNode } from 'react';
 import { FileSpreadsheet, Download, Users, FileText, AlertTriangle, CheckCircle, Clock, Calendar, ChevronDown, Search } from 'lucide-react';
 import { useReconciliationStore } from '@/store/useReconciliationStore';
+import { ExportType } from '@/../shared/types';
 
 export default function ReportExport() {
   const { exportReport, reconciliationResults, currentPeriod, customers, products } =
     useReconciliationStore();
   const [selectedPeriod, setSelectedPeriod] = useState(currentPeriod);
   const [searchTerm, setSearchTerm] = useState('');
-  const [exportingType, setExportingType] = useState<string | null>(null);
+  const [exportingType, setExportingType] = useState<ExportType | null>(null);
 
   const completedResults = reconciliationResults.filter((r) => r.status === 'completed');
   const pendingResults = reconciliationResults.filter((r) => r.status === 'pending');
@@ -22,7 +23,15 @@ export default function ReportExport() {
   const pendingDiscrepancies = reconciliationResults.reduce(
     (sum, r) => sum + r.discrepancies.filter((d) => d.status === 'pending').length, 0);
 
-  const reportTypes = [
+  const reportTypes: Array<{
+    key: ExportType;
+    label: string;
+    icon: ReactNode;
+    description: string;
+    color: string;
+    bgColor: string;
+    borderColor: string;
+  }> = [
     {
       key: 'customer_statement',
       label: '客户对账单',
@@ -52,10 +61,10 @@ export default function ReportExport() {
     },
   ];
 
-  const handleExport = async (type: string) => {
+  const handleExport = async (type: ExportType) => {
     setExportingType(type);
     await new Promise((resolve) => setTimeout(resolve, 1000));
-    exportReport(type as any, selectedPeriod);
+    exportReport(type, selectedPeriod);
     setExportingType(null);
   };
 

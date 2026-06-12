@@ -1,46 +1,60 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, Tag, DollarSign, Layers, Calendar, CheckCircle } from 'lucide-react';
 import { useReconciliationStore } from '@/store/useReconciliationStore';
 import Modal from '@/components/Modal';
 import StatusBadge from '@/components/StatusBadge';
 import { BillingConfig as BillingConfigType } from '@/../shared/types';
 
+const defaultBillingConfigs: BillingConfigType[] = [
+  {
+    id: 'billing-1',
+    name: '标准按次计费',
+    type: 'per_call' as const,
+    description: '适用于按调用次数计费的API服务',
+    config: { unitPrice: 1.0 },
+    createdAt: '2026-01-01',
+  },
+  {
+    id: 'billing-2',
+    name: '企业包月套餐',
+    type: 'monthly' as const,
+    description: '不限调用次数，按月收取固定费用',
+    config: { monthlyFee: 5000 },
+    createdAt: '2026-01-15',
+  },
+  {
+    id: 'billing-3',
+    name: '阶梯定价方案',
+    type: 'tiered' as const,
+    description: '调用量越大，单价越便宜',
+    config: {
+      tiers: [
+        { minCalls: 0, maxCalls: 10000, unitPrice: 0.5 },
+        { minCalls: 10001, maxCalls: 50000, unitPrice: 0.4 },
+        { minCalls: 50001, maxCalls: 999999999, unitPrice: 0.3 },
+      ],
+    },
+    createdAt: '2026-02-01',
+  },
+];
+
 export default function BillingConfig() {
-  const { products } = useReconciliationStore();
+  const {
+    products,
+    billingConfigs,
+    setBillingConfigs,
+    addBillingConfig,
+    updateBillingConfig,
+    deleteBillingConfig,
+  } = useReconciliationStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [billingConfigs, setBillingConfigs] = useState<BillingConfigType[]>([
-    {
-      id: '1',
-      name: '标准按次计费',
-      type: 'per_call' as const,
-      description: '适用于按调用次数计费的API服务',
-      config: { unitPrice: 1.0 },
-      createdAt: '2026-01-01',
-    },
-    {
-      id: '2',
-      name: '企业包月套餐',
-      type: 'monthly' as const,
-      description: '不限调用次数，按月收取固定费用',
-      config: { monthlyFee: 5000 },
-      createdAt: '2026-01-15',
-    },
-    {
-      id: '3',
-      name: '阶梯定价方案',
-      type: 'tiered' as const,
-      description: '调用量越大，单价越便宜',
-      config: {
-        tiers: [
-          { minCalls: 0, maxCalls: 10000, unitPrice: 0.5 },
-          { minCalls: 10001, maxCalls: 50000, unitPrice: 0.4 },
-          { minCalls: 50001, maxCalls: 999999999, unitPrice: 0.3 },
-        ],
-      },
-      createdAt: '2026-02-01',
-    },
-  ]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (billingConfigs.length === 0) {
+      setBillingConfigs(defaultBillingConfigs);
+    }
+  }, []);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -52,7 +66,7 @@ export default function BillingConfig() {
   });
 
   const openAddModal = () => {
-    setEditingIndex(null);
+    setEditingId(null);
     setFormData({
       name: '',
       type: 'per_call',
@@ -64,9 +78,10 @@ export default function BillingConfig() {
     setIsModalOpen(true);
   };
 
-  const openEditModal = (index: number) => {
-    const config = billingConfigs[index];
-    setEditingIndex(index);
+  const openEditModal = (id: string) => {
+    const config = billingConfigs.find((c) => c.id === id);
+    if (!config) return;
+    setEditingId(id);
     setFormData({
       name: config.name,
       type: config.type,
@@ -80,42 +95,47 @@ export default function BillingConfig() {
 
   const handleSubmit = () => {
     let newConfig: BillingConfigType;
+    const configId = editingId || `billing-${Date.now()}`;
 
     if (formData.type === 'per_call') {
       newConfig = {
-        id: String(Date.now()),
+        id: configId,
         name: formData.name,
         type: 'per_call',
         description: formData.description,
         config: { unitPrice: formData.unitPrice },
-        createdAt: new Date().toISOString().split('T')[0],
+        createdAt: editingId
+          ? billingConfigs.find((c) => c.id === editingId)?.createdAt || new Date().toISOString().split('T')[0]
+          : new Date().toISOString().split('T')[0],
       };
     } else if (formData.type === 'monthly') {
       newConfig = {
-        id: String(Date.now()),
+        id: configId,
         name: formData.name,
         type: 'monthly',
         description: formData.description,
         config: { monthlyFee: formData.monthlyFee },
-        createdAt: new Date().toISOString().split('T')[0],
+        createdAt: editingId
+          ? billingConfigs.find((c) => c.id === editingId)?.createdAt || new Date().toISOString().split('T')[0]
+          : new Date().toISOString().split('T')[0],
       };
     } else {
       newConfig = {
-        id: String(Date.now()),
+        id: configId,
         name: formData.name,
         type: 'tiered',
         description: formData.description,
         config: { tiers: formData.tiers },
-        createdAt: new Date().toISOString().split('T')[0],
+        createdAt: editingId
+          ? billingConfigs.find((c) => c.id === editingId)?.createdAt || new Date().toISOString().split('T')[0]
+          : new Date().toISOString().split('T')[0],
       };
     }
 
-    if (editingIndex !== null) {
-      const newConfigs = [...billingConfigs];
-      newConfigs[editingIndex] = { ...newConfig, id: billingConfigs[editingIndex].id } as BillingConfigType;
-      setBillingConfigs(newConfigs);
+    if (editingId) {
+      updateBillingConfig(newConfig);
     } else {
-      setBillingConfigs([...billingConfigs, newConfig]);
+      addBillingConfig(newConfig);
     }
     setIsModalOpen(false);
   };
@@ -167,7 +187,7 @@ export default function BillingConfig() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {billingConfigs.map((config, index) => (
+        {billingConfigs.map((config) => (
           <div key={config.id} className="card p-6 card-hover">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
@@ -182,13 +202,13 @@ export default function BillingConfig() {
               <div className="flex items-center gap-1">
                 <button
                   className="p-1 hover:bg-navy-100 rounded text-navy-600 transition-colors"
-                  onClick={() => openEditModal(index)}
+                  onClick={() => openEditModal(config.id)}
                 >
                   <Edit2 size={14} />
                 </button>
                 <button
                   className="p-1 hover:bg-rose-50 rounded text-rose-500 transition-colors"
-                  onClick={() => setBillingConfigs(billingConfigs.filter((_, i) => i !== index))}
+                  onClick={() => deleteBillingConfig(config.id)}
                 >
                   <Trash2 size={14} />
                 </button>
@@ -283,14 +303,14 @@ export default function BillingConfig() {
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        title={editingIndex !== null ? '编辑计费方案' : '新增计费方案'}
+        title={editingId !== null ? '编辑计费方案' : '新增计费方案'}
         footer={
           <>
             <button className="btn btn-secondary" onClick={() => setIsModalOpen(false)}>
               取消
             </button>
             <button className="btn btn-primary" onClick={handleSubmit}>
-              {editingIndex !== null ? '保存修改' : '创建方案'}
+              {editingId !== null ? '保存修改' : '创建方案'}
             </button>
           </>
         }

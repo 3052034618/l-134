@@ -5,7 +5,13 @@ import StatusBadge from '@/components/StatusBadge';
 import Modal from '@/components/Modal';
 
 export default function DiscrepancyHandling() {
-  const { reconciliationResults, resolveDiscrepancy, addAdjustment } = useReconciliationStore();
+  const {
+    reconciliationResults,
+    resolveDiscrepancy,
+    waiveDiscrepancy,
+    markDiscrepancyAsFreeTrial,
+    applyPeriodAdjustment,
+  } = useReconciliationStore();
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedResult, setExpandedResult] = useState<string | null>(null);
@@ -62,39 +68,48 @@ export default function DiscrepancyHandling() {
   const handleResolve = () => {
     if (!resolveModal.resultId || !resolveModal.discrepancyId) return;
 
-    let resolution = '';
     switch (resolutionType) {
       case 'ignore':
-        resolution = '确认有效调用，正常计费';
+        resolveDiscrepancy(
+          resolveModal.resultId,
+          resolveModal.discrepancyId,
+          resolutionNote || '确认有效调用，正常计费'
+        );
         break;
       case 'waive':
-        resolution = '豁免该笔费用';
+        waiveDiscrepancy(
+          resolveModal.resultId,
+          resolveModal.discrepancyId
+        );
         break;
       case 'discount':
-        resolution = `给予折扣，金额调整为 -¥${adjustmentAmount}`;
-        addAdjustment({
-          customerId: reconciliationResults.find((r) => r.id === resolveModal.resultId)
-            ?.customerId || '',
-          customerName: reconciliationResults.find((r) => r.id === resolveModal.resultId)
-            ?.customerName || '',
-          amount: parseFloat(adjustmentAmount) * -1,
-          type: 'deduction',
-          reason: resolutionNote || '差异调整',
-          operator: '系统管理员',
-        });
+        const adjAmount = -parseFloat(adjustmentAmount || '0');
+        applyPeriodAdjustment(
+          resolveModal.resultId,
+          adjAmount,
+          resolutionNote || '差异调整'
+        );
+        resolveDiscrepancy(
+          resolveModal.resultId,
+          resolveModal.discrepancyId,
+          `给予折扣，金额调整为 ¥${adjAmount.toFixed(2)}`
+        );
         break;
       case 'free_trial':
-        resolution = '标记为免费试用';
+        markDiscrepancyAsFreeTrial(
+          resolveModal.resultId,
+          resolveModal.discrepancyId
+        );
         break;
       default:
-        resolution = resolutionNote;
+        if (resolutionNote) {
+          resolveDiscrepancy(
+            resolveModal.resultId,
+            resolveModal.discrepancyId,
+            resolutionNote
+          );
+        }
     }
-
-    resolveDiscrepancy(
-      resolveModal.resultId,
-      resolveModal.discrepancyId,
-      resolution
-    );
 
     setResolveModal({ isOpen: false, resultId: '', discrepancyId: '' });
     setResolutionType('');

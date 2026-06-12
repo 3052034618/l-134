@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Calculator, CheckCircle, AlertTriangle, TrendingUp, TrendingDown, ChevronDown, ChevronRight, RefreshCw, Play, Search, FileText } from 'lucide-react';
+import { Calculator, CheckCircle, AlertTriangle, TrendingUp, TrendingDown, ChevronDown, ChevronRight, RefreshCw, Play, Search, FileText, Plus, Layers, Clock, Users } from 'lucide-react';
 import { useReconciliationStore } from '@/store/useReconciliationStore';
 import StatusBadge from '@/components/StatusBadge';
+import Modal from '@/components/Modal';
 
 export default function Reconciliation() {
   const {
@@ -11,28 +12,40 @@ export default function Reconciliation() {
     isReconciling,
     customers,
     products,
+    batches,
+    currentBatchId,
+    customerProgress,
+    createBatch,
+    setCurrentBatch,
+    updateBatchStatus,
   } = useReconciliationStore();
   const [expandedResult, setExpandedResult] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [showBatchModal, setShowBatchModal] = useState(false);
+  const [newBatchPeriod, setNewBatchPeriod] = useState(currentPeriod);
+  const [newBatchName, setNewBatchName] = useState('');
+  const [newBatchRemark, setNewBatchRemark] = useState('');
+  const [viewMode, setViewMode] = useState<'reconciliation' | 'batch'>('reconciliation');
 
   const totalReceivable = reconciliationResults.reduce((sum, r) => sum + r.receivableAmount, 0);
   const totalConfirmed = reconciliationResults.reduce((sum, r) => sum + r.confirmedAmount, 0);
   const totalDifference = reconciliationResults.reduce((sum, r) => sum + r.differenceAmount, 0);
   const pendingCount = reconciliationResults.filter((r) => r.status === 'pending').length;
 
-  const filteredResults = reconciliationResults.filter(
-    (r) =>
-      r.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      r.details.some((d) => d.productName.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const currentBatch = batches.find(b => b.id === currentBatchId);
+  const batchProgress = currentBatchId ? customerProgress.filter(p => p.batchId === currentBatchId) : [];
 
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'completed':
+      case 'exported':
         return 'bg-emerald-500';
       case 'partial':
+      case 'pending_resolution':
         return 'bg-amber-500';
       case 'pending':
+      case 'fetched':
+      case 'reconciled':
         return 'bg-rose-500';
       default:
         return 'bg-navy-400';
@@ -47,45 +60,192 @@ export default function Reconciliation() {
         return '部分处理';
       case 'pending':
         return '待处理';
+      case 'not_started':
+        return '未开始';
+      case 'fetched':
+        return '已拉取';
+      case 'reconciled':
+        return '已核对';
+      case 'pending_resolution':
+        return '待处理差异';
+      case 'exported':
+        return '已导出';
       default:
         return '未知';
     }
   };
 
-  return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-navy-900">对账核对</h1>
-          <p className="text-navy-500 mt-1">
-            对账周期: <span className="font-semibold text-navy-700">{currentPeriod}</span>
-          </p>
+  const filteredResults = reconciliationResults.filter(
+    (r) =>
+      r.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      r.details.some((d) => d.productName.toLowerCase().includes(searchTerm.toLowerCase()))
+  );
+
+  const filteredProgress = batchProgress.filter(
+    (p) => p.customerName.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const handleCreateBatch = () => {
+    if (!newBatchName.trim()) return;
+    createBatch(newBatchPeriod, newBatchName.trim(), newBatchRemark.trim() || undefined);
+    setShowBatchModal(false);
+    setNewBatchName('');
+    setNewBatchRemark('');
+  };
+
+  const progressStats = {
+    notStarted: batchProgress.filter(p => p.status === 'not_started').length,
+    fetched: batchProgress.filter(p => p.status === 'fetched').length,
+    reconciled: batchProgress.filter(p => p.status === 'reconciled').length,
+    pendingResolution: batchProgress.filter(p => p.status === 'pending_resolution').length,
+    exported: batchProgress.filter(p => p.status === 'exported').length,
+  };
+
+  const renderBatchView = () => (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="stat-card">
+          <div className="flex items-center gap-2 mb-2">
+            <Clock size={16} className="text-navy-500" />
+            <p className="stat-label">未开始</p>
+          </div>
+          <p className="stat-value text-navy-600">{progressStats.notStarted}</p>
         </div>
-        <div className="flex gap-3">
-          <button className="btn btn-secondary" onClick={() => runReconciliation()}>
-            <RefreshCw size={16} className="mr-2" />
-            重新计算
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => runReconciliation()}
-            disabled={isReconciling}
-          >
-            {isReconciling ? (
-              <>
-                <RefreshCw size={16} className="mr-2 animate-spin" />
-                计算中...
-              </>
-            ) : (
-              <>
-                <Calculator size={16} className="mr-2" />
-                开始对账
-              </>
-            )}
-          </button>
+        <div className="stat-card">
+          <div className="flex items-center gap-2 mb-2">
+            <FileText size={16} className="text-blue-500" />
+            <p className="stat-label">已拉取</p>
+          </div>
+          <p className="stat-value text-blue-600">{progressStats.fetched}</p>
+        </div>
+        <div className="stat-card">
+          <div className="flex items-center gap-2 mb-2">
+            <Calculator size={16} className="text-emerald-500" />
+            <p className="stat-label">已核对</p>
+          </div>
+          <p className="stat-value text-emerald-600">{progressStats.reconciled}</p>
+        </div>
+        <div className="stat-card">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle size={16} className="text-amber-500" />
+            <p className="stat-label">待处理差异</p>
+          </div>
+          <p className="stat-value text-amber-600">{progressStats.pendingResolution}</p>
+        </div>
+        <div className="stat-card">
+          <div className="flex items-center gap-2 mb-2">
+            <CheckCircle size={16} className="text-green-500" />
+            <p className="stat-label">已导出</p>
+          </div>
+          <p className="stat-value text-green-600">{progressStats.exported}</p>
         </div>
       </div>
 
+      {batchProgress.length > 0 && (
+        <div className="card p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-semibold text-navy-800 flex items-center gap-2">
+              <Users size={20} className="text-navy-600" />
+              客户对账进度
+            </h3>
+            <div className="relative max-w-md">
+              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-navy-400" />
+              <input
+                type="text"
+                placeholder="搜索客户名称..."
+                className="input pl-10"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="table-container">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>客户名称</th>
+                  <th>数据拉取</th>
+                  <th>对账计算</th>
+                  <th>差异处理</th>
+                  <th>报表导出</th>
+                  <th>整体进度</th>
+                  <th>最后更新</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-navy-100">
+                {filteredProgress.map((progress) => {
+                  const steps = [
+                    { done: progress.callsFetched && progress.refundsFetched && progress.adjustmentsFetched, label: '数据拉取' },
+                    { done: progress.reconciled, label: '对账计算' },
+                    { done: progress.discrepanciesResolved, label: '差异处理' },
+                    { done: progress.exported, label: '报表导出' },
+                  ];
+                  const doneCount = steps.filter(s => s.done).length;
+                  const progressPct = (doneCount / steps.length) * 100;
+
+                  return (
+                    <tr key={progress.customerId}>
+                      <td className="font-medium">{progress.customerName}</td>
+                      <td className="text-center">
+                        {(progress.callsFetched && progress.refundsFetched && progress.adjustmentsFetched) ? (
+                          <CheckCircle size={18} className="text-emerald-500 mx-auto" />
+                        ) : (
+                          <Clock size={18} className="text-navy-300 mx-auto" />
+                        )}
+                      </td>
+                      <td className="text-center">
+                        {progress.reconciled ? (
+                          <CheckCircle size={18} className="text-emerald-500 mx-auto" />
+                        ) : (
+                          <Clock size={18} className="text-navy-300 mx-auto" />
+                        )}
+                      </td>
+                      <td className="text-center">
+                        {progress.discrepanciesResolved ? (
+                          <CheckCircle size={18} className="text-emerald-500 mx-auto" />
+                        ) : (
+                          <AlertTriangle size={18} className="text-amber-400 mx-auto" />
+                        )}
+                      </td>
+                      <td className="text-center">
+                        {progress.exported ? (
+                          <CheckCircle size={18} className="text-emerald-500 mx-auto" />
+                        ) : (
+                          <Clock size={18} className="text-navy-300 mx-auto" />
+                        )}
+                      </td>
+                      <td>
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 h-2 bg-navy-100 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 rounded-full transition-all duration-500"
+                              style={{ width: `${progressPct}%` }}
+                            />
+                          </div>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium text-white ${getStatusColor(progress.status)}`}
+                          >
+                            {getStatusText(progress.status)}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="text-sm text-navy-500">
+                        {new Date(progress.lastUpdated).toLocaleString('zh-CN')}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderReconciliationView = () => (
+    <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <div className="stat-card">
           <div className="flex items-center gap-2 mb-2">
@@ -344,7 +504,7 @@ export default function Reconciliation() {
                                 </div>
                               </div>
                               {disc.resolution && (
-                                <p className="text-xs text-navy-500 mt-2">
+                                <p className="text-xs text-emerald-700 mt-2">
                                   处理结果: {disc.resolution}
                                 </p>
                               )}
@@ -400,6 +560,161 @@ export default function Reconciliation() {
           </button>
         </div>
       )}
+    </div>
+  );
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-navy-900">对账核对</h1>
+          <p className="text-navy-500 mt-1">
+            对账周期: <span className="font-semibold text-navy-700">{currentPeriod}</span>
+            {currentBatch && (
+              <span className="ml-4">
+                当前批次: <span className="font-semibold text-blue-600">{currentBatch.name}</span>
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="flex gap-3">
+          <div className="flex bg-navy-50 rounded-lg p-1">
+            <button
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                viewMode === 'batch' ? 'bg-white text-navy-800 shadow-sm' : 'text-navy-500 hover:text-navy-700'
+              }`}
+              onClick={() => setViewMode('batch')}
+            >
+              <Layers size={14} className="inline mr-1" /> 批次进度
+            </button>
+            <button
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                viewMode === 'reconciliation' ? 'bg-white text-navy-800 shadow-sm' : 'text-navy-500 hover:text-navy-700'
+              }`}
+              onClick={() => setViewMode('reconciliation')}
+            >
+              <Calculator size={14} className="inline mr-1" /> 对账详情
+            </button>
+          </div>
+          <button className="btn btn-secondary" onClick={() => setShowBatchModal(true)}>
+            <Plus size={16} className="mr-2" />
+            新建批次
+          </button>
+          <button className="btn btn-secondary" onClick={() => runReconciliation()}>
+            <RefreshCw size={16} className="mr-2" />
+            重新计算
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => runReconciliation()}
+            disabled={isReconciling}
+          >
+            {isReconciling ? (
+              <>
+                <RefreshCw size={16} className="mr-2 animate-spin" />
+                计算中...
+              </>
+            ) : (
+              <>
+                <Calculator size={16} className="mr-2" />
+                开始对账
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {batches.length > 0 && (
+        <div className="card p-4">
+          <div className="flex items-center gap-4 overflow-x-auto scrollbar-thin">
+            <span className="text-sm font-medium text-navy-600 flex-shrink-0">切换批次:</span>
+            <div className="flex gap-2">
+              {batches.map((batch) => (
+                <button
+                  key={batch.id}
+                  onClick={() => setCurrentBatch(batch.id)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
+                    currentBatchId === batch.id
+                      ? 'bg-navy-800 text-white shadow-md'
+                      : 'bg-navy-50 text-navy-600 hover:bg-navy-100'
+                  }`}
+                >
+                  {batch.name}
+                  <span className="ml-2 text-xs opacity-70">
+                    ({batch.period})
+                  </span>
+                  <span className={`ml-2 inline-block w-2 h-2 rounded-full ${
+                    batch.status === 'completed' ? 'bg-emerald-400' :
+                    batch.status === 'in_progress' ? 'bg-blue-400' :
+                    batch.status === 'closed' ? 'bg-navy-400' : 'bg-amber-400'
+                  }`} />
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewMode === 'reconciliation' ? renderReconciliationView() : renderBatchView()}
+
+      <Modal
+        isOpen={showBatchModal}
+        onClose={() => setShowBatchModal(false)}
+        title="新建对账批次"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-navy-700 mb-1">
+              对账周期
+            </label>
+            <input
+              type="text"
+              className="input"
+              value={newBatchPeriod}
+              onChange={(e) => setNewBatchPeriod(e.target.value)}
+              placeholder="YYYY-MM"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-navy-700 mb-1">
+              批次名称 <span className="text-rose-500">*</span>
+            </label>
+            <input
+              type="text"
+              className="input"
+              value={newBatchName}
+              onChange={(e) => setNewBatchName(e.target.value)}
+              placeholder="例如：2026年5月第一批对账"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-navy-700 mb-1">
+              备注说明
+            </label>
+            <textarea
+              className="input min-h-[80px]"
+              value={newBatchRemark}
+              onChange={(e) => setNewBatchRemark(e.target.value)}
+              placeholder="可选：备注本次对账的说明..."
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-4 border-t border-navy-100">
+            <button
+              className="btn btn-secondary"
+              onClick={() => setShowBatchModal(false)}
+            >
+              取消
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleCreateBatch}
+              disabled={!newBatchName.trim()}
+            >
+              创建批次
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

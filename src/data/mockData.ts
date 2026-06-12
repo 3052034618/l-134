@@ -230,7 +230,7 @@ const generateCallRecords = (): CallRecord[] => {
     { customerId: 'cust-003', customerName: '腾讯科技(深圳)有限公司', productId: 'prod-002', productName: '个人身份核验服务', days: 31, avgDaily: 3000 },
     { customerId: 'cust-003', customerName: '腾讯科技(深圳)有限公司', productId: 'prod-003', productName: '车辆信息查询包年服务', days: 31, avgDaily: 800 },
     { customerId: 'cust-004', customerName: '北京字节跳动科技有限公司', productId: 'prod-004', productName: '地理位置逆编码', days: 30, avgDaily: 1200 },
-    { customerId: 'cust-004', customerName: '北京字节跳动科技有限公司', productId: 'prod-005', productName: '企业财务数据分析', days: 25, avgDaily: 15 },
+    { customerId: 'cust-004', customerName: '北京字节跳动科技有限公司', productId: 'prod-005', productName: '企业财务数据分析', days: 25, avgDaily: 35 },
     { customerId: 'cust-005', customerName: '京东科技集团', productId: 'prod-001', productName: '企业征信查询API', days: 31, avgDaily: 250 },
     { customerId: 'cust-005', customerName: '京东科技集团', productId: 'prod-005', productName: '企业财务数据分析', days: 20, avgDaily: 8 },
   ];

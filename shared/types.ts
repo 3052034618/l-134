@@ -161,4 +161,48 @@ export interface ApiResponse<T> {
   message?: string;
 }
 
-export type ExportType = 'customer' | 'internal' | 'followup';
+export type ExportType = 'customer_statement' | 'internal_summary' | 'follow_up_list';
+
+export type CustomerProgressStatus = 'not_started' | 'fetched' | 'reconciled' | 'pending_resolution' | 'exported';
+
+export interface ReconciliationBatch {
+  id: string;
+  period: string;
+  name: string;
+  status: 'draft' | 'in_progress' | 'completed' | 'closed';
+  createdAt: string;
+  createdBy: string;
+  completedAt?: string;
+  remark?: string;
+}
+
+export interface CustomerProgress {
+  batchId: string;
+  customerId: string;
+  customerName: string;
+  status: CustomerProgressStatus;
+  callsFetched: boolean;
+  refundsFetched: boolean;
+  adjustmentsFetched: boolean;
+  reconciled: boolean;
+  discrepanciesResolved: boolean;
+  exported: boolean;
+  lastUpdated: string;
+}
+
+export interface UploadValidationResult {
+  isValid: boolean;
+  errors: string[];
+  warnings: string[];
+  totalRows: number;
+  validRows: number;
+}
+
+export interface UploadPreviewData {
+  type: 'calls' | 'refunds' | 'adjustments';
+  headers: string[];
+  rows: any[];
+  validation: UploadValidationResult;
+  mappedFields: Record<string, string>;
+}
+
