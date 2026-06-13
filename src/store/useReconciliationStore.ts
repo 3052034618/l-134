@@ -53,6 +53,9 @@ interface ReconciliationStore {
   isReconciling: boolean;
   uploadPreview: UploadPreviewData | null;
 
+  getCurrentBatch: () => ReconciliationBatch | undefined;
+  isCurrentBatchConfirmed: () => boolean;
+
   setProducts: (products: DataProduct[]) => void;
   addProduct: (product: Omit<DataProduct, 'id' | 'createdAt'>) => void;
   updateProduct: (product: DataProduct) => void;
@@ -158,6 +161,7 @@ const validateUploadedCalls = (rows: any[], customers: Customer[], products: Dat
   const errors: string[] = [];
   const warnings: string[] = [];
   const errorRows: UploadValidationResult['errorRows'] = [];
+  const validDataRows: any[] = [];
   let validRows = 0;
 
   const customerMap = new Map(customers.map(c => [c.name, c.id]));
@@ -186,6 +190,7 @@ const validateUploadedCalls = (rows: any[], customers: Customer[], products: Dat
       errorRows.push({ rowIndex: lineNum, errors: [...rowErrors, ...rowWarnings], rowData: row });
     } else {
       validRows++;
+      validDataRows.push(row);
     }
   });
 
@@ -196,6 +201,7 @@ const validateUploadedCalls = (rows: any[], customers: Customer[], products: Dat
     totalRows: rows.length,
     validRows,
     errorRows,
+    validDataRows,
   };
 };
 
@@ -203,6 +209,7 @@ const validateUploadedRefunds = (rows: any[], customers: Customer[], products: D
   const errors: string[] = [];
   const warnings: string[] = [];
   const errorRows: UploadValidationResult['errorRows'] = [];
+  const validDataRows: any[] = [];
   let validRows = 0;
 
   const customerMap = new Map(customers.map(c => [c.name, c.id]));
@@ -230,6 +237,7 @@ const validateUploadedRefunds = (rows: any[], customers: Customer[], products: D
       errorRows.push({ rowIndex: lineNum, errors: rowErrors, rowData: row });
     } else {
       validRows++;
+      validDataRows.push(row);
     }
   });
 
@@ -240,6 +248,7 @@ const validateUploadedRefunds = (rows: any[], customers: Customer[], products: D
     totalRows: rows.length,
     validRows,
     errorRows,
+    validDataRows,
   };
 };
 
@@ -247,6 +256,7 @@ const validateUploadedAdjustments = (rows: any[], customers: Customer[]): Upload
   const errors: string[] = [];
   const warnings: string[] = [];
   const errorRows: UploadValidationResult['errorRows'] = [];
+  const validDataRows: any[] = [];
   let validRows = 0;
 
   const customerMap = new Map(customers.map(c => [c.name, c.id]));
@@ -273,6 +283,7 @@ const validateUploadedAdjustments = (rows: any[], customers: Customer[]): Upload
       errorRows.push({ rowIndex: lineNum, errors: rowErrors, rowData: row });
     } else {
       validRows++;
+      validDataRows.push(row);
     }
   });
 
@@ -283,6 +294,7 @@ const validateUploadedAdjustments = (rows: any[], customers: Customer[]): Upload
     totalRows: rows.length,
     validRows,
     errorRows,
+    validDataRows,
   };
 };
 
@@ -337,6 +349,16 @@ export const useReconciliationStore = create<ReconciliationStore>()(
       isFetching: false,
       isReconciling: false,
       uploadPreview: null,
+
+      getCurrentBatch: () => {
+        const { batches, currentBatchId } = get();
+        return batches.find(b => b.id === currentBatchId);
+      },
+
+      isCurrentBatchConfirmed: () => {
+        const batch = get().getCurrentBatch();
+        return batch?.status === 'confirmed';
+      },
 
       setProducts: (products) => set({ products }),
       addProduct: (product) =>
@@ -397,6 +419,10 @@ export const useReconciliationStore = create<ReconciliationStore>()(
       setReconciliationCycle: (cycle) => set({ reconciliationCycle: cycle }),
 
       fetchAllData: async () => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能再拉取数据。请先撤回确认或新建版本。');
+          return;
+        }
         set({ isFetching: true, fetchStatuses: initialFetchStatuses.map(s => ({ ...s, status: 'fetching' })) });
 
         const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -473,6 +499,7 @@ export const useReconciliationStore = create<ReconciliationStore>()(
           headers,
           rows: allRows.slice(0, 10),
           allRows,
+          validDataRows: validation.validDataRows,
           validation,
           mappedFields: {},
         };
@@ -482,62 +509,61 @@ export const useReconciliationStore = create<ReconciliationStore>()(
       },
 
       confirmUpload: () => {
-        const { uploadPreview, callRecords, refundRecords, adjustmentRecords, customers, products } = get();
+        const { uploadPreview, callRecords, refundRecords, adjustmentRecords, customers, products, isCurrentBatchConfirmed } = get();
         if (!uploadPreview) return;
+
+        if (isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能再导入数据。请先撤回确认或新建版本。');
+          return;
+        }
 
         const customerMap = new Map(customers.map(c => [c.name, c.id]));
         const productMap = new Map(products.map(p => [p.name, p.id]));
-        const validRows = uploadPreview.allRows;
+        const validRows = uploadPreview.validDataRows;
 
         if (uploadPreview.type === 'calls') {
-          const newRecords: CallRecord[] = validRows
-            .filter(row => customerMap.has(row.customerName) && productMap.has(row.productName) && Number(row.callCount) >= 0)
-            .map(row => ({
-              id: generateId('call'),
-              customerId: customerMap.get(row.customerName)!,
-              customerName: row.customerName,
-              productId: productMap.get(row.productName)!,
-              productName: row.productName,
-              callTime: row.callTime || new Date().toISOString().slice(0, 10),
-              callCount: Number(row.callCount),
-              isDuplicate: false,
-              isOverAuthorized: false,
-            }));
+          const newRecords: CallRecord[] = validRows.map(row => ({
+            id: generateId('call'),
+            customerId: customerMap.get(row.customerName)!,
+            customerName: row.customerName,
+            productId: productMap.get(row.productName)!,
+            productName: row.productName,
+            callTime: row.callTime || new Date().toISOString().slice(0, 10),
+            callCount: Number(row.callCount),
+            isDuplicate: false,
+            isOverAuthorized: false,
+          }));
           set({
             callRecords: [...callRecords, ...newRecords],
             uploadPreview: null,
           });
         } else if (uploadPreview.type === 'refunds') {
-          const newRecords: RefundRecord[] = validRows
-            .filter(row => customerMap.has(row.customerName) && productMap.has(row.productName) && Number(row.amount) > 0)
-            .map(row => ({
-              id: generateId('refund'),
-              customerId: customerMap.get(row.customerName)!,
-              customerName: row.customerName,
-              productId: productMap.get(row.productName)!,
-              productName: row.productName,
-              amount: Number(row.amount),
-              reason: row.reason,
-              refundDate: row.refundDate || new Date().toISOString().slice(0, 10),
-              status: 'approved',
-            }));
+          const newRecords: RefundRecord[] = validRows.map(row => ({
+            id: generateId('refund'),
+            customerId: customerMap.get(row.customerName)!,
+            customerName: row.customerName,
+            productId: productMap.get(row.productName)!,
+            productName: row.productName,
+            amount: Number(row.amount),
+            reason: row.reason,
+            refundDate: row.refundDate || new Date().toISOString().slice(0, 10),
+            status: 'approved',
+          }));
           set({
             refundRecords: [...refundRecords, ...newRecords],
             uploadPreview: null,
           });
         } else {
-          const newRecords: AdjustmentRecord[] = validRows
-            .filter(row => customerMap.has(row.customerName) && ['addition', 'deduction'].includes(row.type) && Number(row.amount) > 0)
-            .map(row => ({
-              id: generateId('adj'),
-              customerId: customerMap.get(row.customerName)!,
-              customerName: row.customerName,
-              amount: Number(row.amount),
-              type: row.type as 'addition' | 'deduction',
-              reason: row.reason,
-              operator: row.operator,
-              createdAt: row.createdAt || new Date().toISOString().slice(0, 10),
-            }));
+          const newRecords: AdjustmentRecord[] = validRows.map(row => ({
+            id: generateId('adj'),
+            customerId: customerMap.get(row.customerName)!,
+            customerName: row.customerName,
+            amount: Number(row.amount),
+            type: row.type as 'addition' | 'deduction',
+            reason: row.reason,
+            operator: row.operator,
+            createdAt: row.createdAt || new Date().toISOString().slice(0, 10),
+          }));
           set({
             adjustmentRecords: [...adjustmentRecords, ...newRecords],
             uploadPreview: null,
@@ -784,6 +810,10 @@ export const useReconciliationStore = create<ReconciliationStore>()(
       },
 
       runReconciliation: () => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能重新对账。请先撤回确认或新建版本。');
+          return get().reconciliationResults;
+        }
         set({ isReconciling: true });
 
         const {
@@ -1013,15 +1043,24 @@ export const useReconciliationStore = create<ReconciliationStore>()(
         return results;
       },
 
-      recalculateResultAmount: (resultId) =>
+      recalculateResultAmount: (resultId) => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能重算金额。请先撤回确认或新建版本。');
+          return;
+        }
         set(state => {
           const newResults = state.results.map(r =>
             r.id === resultId ? recalculateConfirmedAmount(r) : r
           );
           return { results: newResults, reconciliationResults: newResults };
-        }),
+        });
+      },
 
-      addAdjustment: (adjustment) =>
+      addAdjustment: (adjustment) => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能新增调整项。请先撤回确认或新建版本。');
+          return;
+        }
         set((state) => ({
           adjustmentRecords: [
             ...state.adjustmentRecords,
@@ -1031,23 +1070,38 @@ export const useReconciliationStore = create<ReconciliationStore>()(
               createdAt: new Date().toISOString().split('T')[0],
             },
           ],
-        })),
+        }));
+      },
 
-      markAsDuplicate: (callRecordId) =>
+      markAsDuplicate: (callRecordId) => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能标记重复。请先撤回确认或新建版本。');
+          return;
+        }
         set((state) => ({
           callRecords: state.callRecords.map((c) =>
             c.id === callRecordId ? { ...c, isDuplicate: true } : c
           ),
-        })),
+        }));
+      },
 
-      markAsOverAuthorized: (callRecordId) =>
+      markAsOverAuthorized: (callRecordId) => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能标记超授权。请先撤回确认或新建版本。');
+          return;
+        }
         set((state) => ({
           callRecords: state.callRecords.map((c) =>
             c.id === callRecordId ? { ...c, isOverAuthorized: true } : c
           ),
-        })),
+        }));
+      },
 
-      resolveDiscrepancy: (resultId, discrepancyId, resolution, amountImpact) =>
+      resolveDiscrepancy: (resultId, discrepancyId, resolution, amountImpact) => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能处理差异。请先撤回确认或新建版本。');
+          return;
+        }
         set((state) => {
           const newResults = state.results.map((r) => {
             if (r.id !== resultId) return r;
@@ -1076,9 +1130,14 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             return recalculateConfirmedAmount(updated);
           });
           return { results: newResults, reconciliationResults: newResults };
-        }),
+        });
+      },
 
-      waiveDiscrepancy: (resultId, discrepancyId) =>
+      waiveDiscrepancy: (resultId, discrepancyId) => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能处理差异。请先撤回确认或新建版本。');
+          return;
+        }
         set((state) => {
           const newResults = state.results.map((r) => {
             if (r.id !== resultId) return r;
@@ -1106,9 +1165,14 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             return recalculateConfirmedAmount(updated);
           });
           return { results: newResults, reconciliationResults: newResults };
-        }),
+        });
+      },
 
-      markDiscrepancyAsFreeTrial: (resultId, discrepancyId) =>
+      markDiscrepancyAsFreeTrial: (resultId, discrepancyId) => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能处理差异。请先撤回确认或新建版本。');
+          return;
+        }
         set((state) => {
           const newResults = state.results.map((r) => {
             if (r.id !== resultId) return r;
@@ -1137,9 +1201,14 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             return recalculateConfirmedAmount(updated);
           });
           return { results: newResults, reconciliationResults: newResults };
-        }),
+        });
+      },
 
-      applyPeriodAdjustment: (resultId, amount, reason) =>
+      applyPeriodAdjustment: (resultId, amount, reason) => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能处理差异。请先撤回确认或新建版本。');
+          return;
+        }
         set((state) => {
           const newResults = state.results.map((r) => {
             if (r.id !== resultId) return r;
@@ -1161,10 +1230,12 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             return recalculateConfirmedAmount(updated);
           });
           return { results: newResults, reconciliationResults: newResults };
-        }),
+        });
+      },
 
       exportReport: (type, period) => {
-        const { results, customers, callRecords, customerProgress, currentBatchId } = get();
+        const { results, customers, callRecords, customerProgress, currentBatchId, batches } = get();
+        const currentBatch = currentBatchId ? batches.find(b => b.id === currentBatchId) : undefined;
         let wb: XLSX.WorkBook;
 
         if (type === 'customer_statement') {
@@ -1180,6 +1251,11 @@ export const useReconciliationStore = create<ReconciliationStore>()(
               ['客户对账单'],
               ['客户名称', result.customerName],
               ['对账周期', result.period],
+              ['版本号', currentBatch ? `V${currentBatch.version}` : '-'],
+              ['运营提交人', currentBatch?.submittedBy || '-'],
+              ['运营提交时间', currentBatch?.submittedAt ? new Date(currentBatch.submittedAt).toLocaleString('zh-CN') : '-'],
+              ['财务确认人', currentBatch?.confirmedBy || '-'],
+              ['财务确认时间', currentBatch?.confirmedAt ? new Date(currentBatch.confirmedAt).toLocaleString('zh-CN') : '-'],
               ['联系人', customer.contact],
               ['联系电话', customer.phone],
               ['联系邮箱', customer.email],
@@ -1218,7 +1294,7 @@ export const useReconciliationStore = create<ReconciliationStore>()(
 
             const ws = XLSX.utils.aoa_to_sheet(data);
             ws['!cols'] = [
-              { wch: 25 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 30 }
+              { wch: 25 }, { wch: 25 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 30 }
             ];
             const sheetName = result.customerName.length > 30 ? result.customerName.slice(0, 30) : result.customerName;
             XLSX.utils.book_append_sheet(wb, ws, sheetName);
@@ -1230,6 +1306,11 @@ export const useReconciliationStore = create<ReconciliationStore>()(
             ['内部对账汇总表'],
             ['对账周期', period],
             ['生成时间', new Date().toLocaleString('zh-CN')],
+            ['版本号', currentBatch ? `V${currentBatch.version}` : '-'],
+            ['运营提交人', currentBatch?.submittedBy || '-'],
+            ['运营提交时间', currentBatch?.submittedAt ? new Date(currentBatch.submittedAt).toLocaleString('zh-CN') : '-'],
+            ['财务确认人', currentBatch?.confirmedBy || '-'],
+            ['财务确认时间', currentBatch?.confirmedAt ? new Date(currentBatch.confirmedAt).toLocaleString('zh-CN') : '-'],
             [],
             ['客户名称', '调用次数', '应收金额(元)', '确认金额(元)', '差异金额(元)', '状态', '待处理差异数'],
             ...results
@@ -1318,7 +1399,11 @@ export const useReconciliationStore = create<ReconciliationStore>()(
         }
       },
 
-      resetData: () =>
+      resetData: () => {
+        if (get().isCurrentBatchConfirmed()) {
+          alert('当前批次已财务确认，不能重置数据。请先撤回确认或新建版本。');
+          return;
+        }
         set({
           callRecords: [],
           refundRecords: [],
@@ -1327,7 +1412,8 @@ export const useReconciliationStore = create<ReconciliationStore>()(
           reconciliationResults: [],
           fetchStatuses: initialFetchStatuses,
           uploadPreview: null,
-        }),
+        });
+      },
     }),
     {
       name: 'reconciliation-store',

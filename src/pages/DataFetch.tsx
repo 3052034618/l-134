@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Database, RefreshCw, CheckCircle, XCircle, Clock, Play, FileJson, Key, CreditCard, Settings, ChevronDown, ChevronRight, Search, Upload, FileSpreadsheet, AlertTriangle, AlertCircle, Trash2 } from 'lucide-react';
+import { Database, RefreshCw, CheckCircle, XCircle, Clock, Play, FileJson, Key, CreditCard, Settings, ChevronDown, ChevronRight, Search, Upload, FileSpreadsheet, AlertTriangle, AlertCircle, Trash2, Lock, ShieldAlert } from 'lucide-react';
 import { useReconciliationStore } from '@/store/useReconciliationStore';
 import StatusBadge from '@/components/StatusBadge';
 import Modal from '@/components/Modal';
@@ -22,12 +22,22 @@ export default function DataFetch() {
     cancelUpload,
     uploadPreview,
     downloadErrorReport,
+    batches,
+    currentBatchId,
+    isCurrentBatchConfirmed,
+    getRefetchImpact,
   } = useReconciliationStore();
   const [activeTab, setActiveTab] = useState<'calls' | 'refunds' | 'adjustments'>('calls');
   const [expandedCustomer, setExpandedCustomer] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [uploadModalType, setUploadModalType] = useState<'calls' | 'refunds' | 'adjustments' | null>(null);
+  const [showImpactModal, setShowImpactModal] = useState(false);
+  const [impactData, setImpactData] = useState<any>(null);
+  const [pendingAction, setPendingAction] = useState<'fetch' | 'reset' | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const currentBatch = batches.find(b => b.id === currentBatchId);
+  const locked = isCurrentBatchConfirmed();
 
   const sourceConfig: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
     calls: { label: '调用记录', icon: <FileJson size={20} />, color: 'bg-emerald-500' },
@@ -79,6 +89,48 @@ export default function DataFetch() {
   const handleConfirmUpload = () => {
     confirmUpload();
     setUploadModalType(null);
+  };
+
+  const handleFetch = () => {
+    const impact = getRefetchImpact();
+    if (impact.isBatchConfirmed || impact.exportedCustomers.length > 0 || impact.affectedCustomers.length > 0) {
+      setImpactData(impact);
+      setPendingAction('fetch');
+      setShowImpactModal(true);
+    } else {
+      fetchAllData();
+    }
+  };
+
+  const handleReset = () => {
+    const impact = getRefetchImpact();
+    if (impact.isBatchConfirmed || impact.exportedCustomers.length > 0 || impact.affectedCustomers.length > 0) {
+      setImpactData(impact);
+      setPendingAction('reset');
+      setShowImpactModal(true);
+    } else {
+      if (confirm('确定要重置所有数据吗？此操作不可撤销。')) {
+        resetData();
+      }
+    }
+  };
+
+  const confirmAction = () => {
+    if (impactData?.isBatchConfirmed) {
+      alert('该批次已财务确认，不能直接覆盖数据。请先撤回确认或新建版本。');
+      setShowImpactModal(false);
+      return;
+    }
+    if (pendingAction === 'fetch') {
+      fetchAllData();
+    } else if (pendingAction === 'reset') {
+      if (confirm('确定要重置所有数据吗？此操作不可撤销。')) {
+        resetData();
+      }
+    }
+    setShowImpactModal(false);
+    setPendingAction(null);
+    setImpactData(null);
   };
 
   const getTemplateFields = (type: string) => {
@@ -242,20 +294,29 @@ export default function DataFetch() {
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {locked && (
+        <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+          <Lock size={20} className="text-amber-600 flex-shrink-0" />
+          <div>
+            <p className="font-semibold text-amber-800">当前批次已财务确认，数据已锁定</p>
+            <p className="text-sm text-amber-700">如需重新拉取或修改数据，请先撤回确认或新建版本。版本号: V{currentBatch?.version}</p>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-navy-900">数据拉取</h1>
           <p className="text-navy-500 mt-1">一键拉取调用记录、授权信息、退款记录和人工调整项</p>
         </div>
         <div className="flex gap-3">
-          <button className="btn btn-secondary" onClick={resetData}>
+          <button className="btn btn-secondary" onClick={handleReset} disabled={locked || isFetching}>
             <RefreshCw size={16} className="mr-2" />
             重置数据
           </button>
           <button
             className="btn btn-primary"
-            onClick={fetchAllData}
-            disabled={isFetching}
+            onClick={handleFetch}
+            disabled={locked || isFetching}
           >
             {isFetching ? (
               <>
@@ -313,9 +374,10 @@ export default function DataFetch() {
                   </div>
                   {status.source !== 'authorization' && (
                     <button
-                      onClick={() => setUploadModalType(status.source as any)}
-                      className="p-1.5 hover:bg-white/60 rounded-lg text-navy-600 hover:text-navy-800 transition-colors"
-                      title={`上传${config.label}`}
+                      onClick={() => !locked && setUploadModalType(status.source as any)}
+                      className={`p-1.5 rounded-lg transition-colors ${locked ? 'text-navy-300 cursor-not-allowed' : 'text-navy-600 hover:text-navy-800 hover:bg-white/60'}`}
+                      title={locked ? '当前批次已锁定，不能上传' : `上传${config.label}`}
+                      disabled={locked}
                     >
                       <Upload size={16} />
                     </button>
@@ -450,18 +512,20 @@ export default function DataFetch() {
                                   <div className="flex items-center gap-2">
                                     {!call.isDuplicate && (
                                       <button
-                                        className="text-xs text-rose-600 hover:text-rose-700"
-                                        onClick={() => markAsDuplicate(call.id)}
+                                        className={`text-xs ${locked ? 'text-navy-300 cursor-not-allowed' : 'text-rose-600 hover:text-rose-700'}`}
+                                        onClick={() => !locked && markAsDuplicate(call.id)}
+                                        disabled={locked}
                                       >
-                                        标记重复
+                                        {locked ? '已锁定' : '标记重复'}
                                       </button>
                                     )}
                                     {!call.isOverAuthorized && (
                                       <button
-                                        className="text-xs text-amber-600 hover:text-amber-700"
-                                        onClick={() => markAsOverAuthorized(call.id)}
+                                        className={`text-xs ${locked ? 'text-navy-300 cursor-not-allowed' : 'text-amber-600 hover:text-amber-700'}`}
+                                        onClick={() => !locked && markAsOverAuthorized(call.id)}
+                                        disabled={locked}
                                       >
-                                        标记超授权
+                                        {locked ? '已锁定' : '标记超授权'}
                                       </button>
                                     )}
                                   </div>
@@ -651,6 +715,74 @@ export default function DataFetch() {
       )}
 
       {renderUploadModal()}
+
+      <Modal
+        isOpen={showImpactModal}
+        onClose={() => { setShowImpactModal(false); setPendingAction(null); setImpactData(null); }}
+        title="操作影响范围确认"
+      >
+        <div className="space-y-4">
+          {impactData?.isBatchConfirmed && (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-3">
+              <ShieldAlert size={20} className="text-rose-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-rose-800">该批次已财务确认，不能直接覆盖数据</p>
+                <p className="text-sm text-rose-700 mt-1">请先撤回确认或新建版本后再执行此操作。</p>
+              </div>
+            </div>
+          )}
+
+          {impactData?.exportedCustomers?.length > 0 && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+              <p className="font-semibold text-amber-800 mb-2">⚠️ 以下客户已导出对账单：</p>
+              <div className="flex flex-wrap gap-2">
+                {impactData.exportedCustomers.map((name: string, i: number) => (
+                  <span key={i} className="px-2 py-1 bg-white rounded text-xs text-amber-700 border border-amber-200">{name}</span>
+                ))}
+              </div>
+              <p className="text-xs text-amber-700 mt-2">重新操作后已导出的账单数据将与系统不一致，请谨慎操作。</p>
+            </div>
+          )}
+
+          {impactData?.affectedCustomers?.length > 0 && !impactData?.isBatchConfirmed && (
+            <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="font-semibold text-blue-800 mb-2">此次操作将影响以下 {impactData.affectedCustomers.length} 个客户：</p>
+              <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+                {impactData.affectedCustomers.map((name: string, i: number) => (
+                  <span key={i} className="px-2 py-1 bg-white rounded text-xs text-blue-700 border border-blue-200">{name}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {impactData?.confirmedCustomers?.length > 0 && (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg">
+              <p className="font-semibold text-rose-800 mb-2">⚠️ 以下客户已财务确认：</p>
+              <div className="flex flex-wrap gap-2">
+                {impactData.confirmedCustomers.map((name: string, i: number) => (
+                  <span key={i} className="px-2 py-1 bg-white rounded text-xs text-rose-700 border border-rose-200">{name}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-navy-100">
+            <button
+              className="btn btn-secondary"
+              onClick={() => { setShowImpactModal(false); setPendingAction(null); setImpactData(null); }}
+            >
+              取消
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={confirmAction}
+              disabled={impactData?.isBatchConfirmed}
+            >
+              {pendingAction === 'reset' ? '确认重置' : '确认执行'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

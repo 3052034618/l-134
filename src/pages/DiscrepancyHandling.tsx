@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, CheckCircle, XCircle, RefreshCw, Search, Filter, ChevronDown, ChevronRight, Copy, Shield, Gift, Calendar, AlertCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle, XCircle, RefreshCw, Search, Filter, ChevronDown, ChevronRight, Copy, Shield, Gift, Calendar, AlertCircle, Lock } from 'lucide-react';
 import { useReconciliationStore } from '@/store/useReconciliationStore';
 import StatusBadge from '@/components/StatusBadge';
 import Modal from '@/components/Modal';
@@ -11,6 +11,9 @@ export default function DiscrepancyHandling() {
     waiveDiscrepancy,
     markDiscrepancyAsFreeTrial,
     applyPeriodAdjustment,
+    batches,
+    currentBatchId,
+    isCurrentBatchConfirmed,
   } = useReconciliationStore();
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -21,6 +24,9 @@ export default function DiscrepancyHandling() {
   const [resolutionType, setResolutionType] = useState<string>('');
   const [resolutionNote, setResolutionNote] = useState('');
   const [adjustmentAmount, setAdjustmentAmount] = useState('');
+
+  const currentBatch = batches.find(b => b.id === currentBatchId);
+  const locked = isCurrentBatchConfirmed();
 
   const allDiscrepancies = reconciliationResults.flatMap((result) =>
     result.discrepancies.map((disc) => ({
@@ -119,6 +125,15 @@ export default function DiscrepancyHandling() {
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {locked && (
+        <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+          <Lock size={20} className="text-amber-600 flex-shrink-0" />
+          <div>
+            <p className="font-semibold text-amber-800">当前批次已财务确认，数据已锁定</p>
+            <p className="text-sm text-amber-700">如需调整，请先撤回确认或新建版本。版本号: V{currentBatch?.version}</p>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-navy-900">差异处理</h1>
@@ -349,6 +364,7 @@ export default function DiscrepancyHandling() {
                                 {disc.status === 'pending' && (
                                   <button
                                     className="btn btn-primary btn-sm"
+                                    disabled={locked}
                                     onClick={() =>
                                       setResolveModal({
                                         isOpen: true,
@@ -357,7 +373,7 @@ export default function DiscrepancyHandling() {
                                       })
                                     }
                                   >
-                                      处理
+                                      {locked ? '已锁定' : '处理'}
                                   </button>
                                 )}
                               </div>

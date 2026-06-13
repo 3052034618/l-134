@@ -205,6 +205,7 @@ export interface UploadValidationResult {
   totalRows: number;
   validRows: number;
   errorRows: UploadErrorRow[];
+  validDataRows: any[];
 }
 
 export interface UploadErrorRow {
@@ -218,6 +219,7 @@ export interface UploadPreviewData {
   headers: string[];
   rows: any[];
   allRows: any[];
+  validDataRows: any[];
   validation: UploadValidationResult;
   mappedFields: Record<string, string>;
 }
